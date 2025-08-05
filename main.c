@@ -220,17 +220,16 @@ int main() {
     ssd1306_fill(&ssd, !color);
     ssd1306_send_data(&ssd);
 
-    // Mensagem a ser enviada
-    const char *msg = "Olá, LoRa!";
-    printf("Transmitindo: %s\n", msg);
-    sx1276_transmit((const uint8_t *)msg, strlen(msg));
-
-    printf("Transmissão finalizada.\n");
-
     sleep_ms(4000);
 
     while (1) {
-        sleep_ms(1000);
+        sleep_ms(2000);
+
+        const char *msg = "Ola LoRa";
+        printf("Transmitindo: %s\n", msg);
+        sx1276_transmit((const uint8_t *)msg, strlen(msg));
+
+        printf("Transmissão finalizada.\n");
 
         // uint8_t buffer[64];
         // int len = sx1276_receive(buffer, sizeof(buffer));
