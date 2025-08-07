@@ -13,97 +13,105 @@
 #include "inc/i2c_protocol/i2c_protocol.h"
 #include "inc/led_rgb/led.h"
 
+#include "inc/sx1276.h"
+
 // SPI
-#define PIN_MISO 16   // SPI0 RX
-#define PIN_MOSI 19   // SPI0 TX
-#define PIN_SCK  18   // SPI0 SCK
-#define PIN_CS   17   // Chip Select
-#define PIN_RST  20   // Reset
+#define SPI_CHANNEL spi0 // Canal SPI
+#define SPI_BAUD_RATE 5000000 // Frequência de transmissão de dados
+#define SCK_PIN  18   // SPI0 SCK
+#define MOSI_PIN 19   // SPI0 TX
+#define MISO_PIN 16   // SPI0 RX
+#define CS_PIN   17   // Seleção de dispositivo
+#define RST_PIN  20   // Reset
 
-#define SPI_PORT spi0
-
-// Registros do SX1276
-#define REG_FIFO            0x00
-#define REG_OP_MODE         0x01
-#define REG_FRF_MSB         0x06
-#define REG_FRF_MID         0x07
-#define REG_FRF_LSB         0x08
-#define REG_PA_CONFIG       0x09
-#define REG_FIFO_ADDR_PTR   0x0D
-#define REG_PAYLOAD_LENGTH  0x22
-#define REG_IRQ_FLAGS       0x12
-#define REG_FIFO_TX_BASE    0x0E
-#define REG_MODEM_CONFIG1   0x1D
-#define REG_MODEM_CONFIG2   0x1E
-#define REG_MODEM_CONFIG3   0x26
-#define REG_20_PREAMBLE_MSB 0x20
-#define REG_21_PREAMBLE_LSB 0x21
-
-#define MODE_SLEEP          0x00
-#define MODE_STDBY          0x01
-#define MODE_TX             0x03
-#define MODE_RX             0x05
-#define MODE_LORA           0x80
-#define MODE_CAD            0x07
-
-void write_register(uint8_t reg, uint8_t value) {
-    uint8_t buf[2] = { reg | 0x80, value }; // MSB = 1 para escrita
-    gpio_put(PIN_CS, 0);
-    spi_write_blocking(SPI_PORT, buf, 2);
-    gpio_put(PIN_CS, 1);
+// Seleciona o dispositivo de comunicação no barramento SPI
+void select_slave(uint chip_select) {
+    gpio_put(chip_select, 0);
 }
 
-uint8_t read_register(uint8_t reg) {
-    uint8_t buf[2] = { reg & 0x7F, 0x00 }; // MSB = 0 para leitura
+// Desceleciona o dispositivo de comunicação no barramento SPI
+void unselect_slave(uint chip_select) {
+    gpio_put(chip_select, 1);
+}
+
+// Escreve no registrador com endereço ADDRESS o valor VALUE
+void write_register(spi_inst_t *spi_channel, uint8_t address, uint8_t value) {
+    uint8_t buffer[2];
+    uint8_t buffer[0] = address | 0x80;
+    uint8_t buffer[1] = value;
+
+    select_slave(CS_PIN);
+    spi_write_blocking(spi_channel, buffer, 2);
+    unselect_slave(CS_PIN);
+}
+
+// Realiza a leitura do registrador com endereço ADDRESS
+uint8_t read_register(spi_inst_t *spi_channel, uint8_t address) {
+    uint8_t buffer[2];
+    uint8_t buffer[0] = address & 0x7F;
+    uint8_t buffer[1] = 0x00;
+
+    // Armazena o valor lido
     uint8_t result[2];
-    gpio_put(PIN_CS, 0);
-    spi_write_read_blocking(SPI_PORT, buf, result, 2);
-    gpio_put(PIN_CS, 1);
+
+    select_slave(CS_PIN);
+    spi_write_read_blocking(spi_channel, buffer, result, 2);
+    unselect_slave(CS_PIN);
+
+    // Retorna o valor lido
     return result[1];
 }
 
+// Reseta o chip SX1276
 void sx1276_reset() {
-    gpio_put(PIN_RST, 0);
+    gpio_put(RST_PIN, 0);
     sleep_ms(100);
-    gpio_put(PIN_RST, 1);
+    gpio_put(RST_PIN, 1);
     sleep_ms(100);
 }
 
-void sx1276_set_frequency(uint64_t freq_hz) {
-    uint64_t frf = (freq_hz << 19) / 32000000; // fórmula de conversão
-    write_register(REG_FRF_MSB, (frf >> 16) & 0xFF);
-    write_register(REG_FRF_MID, (frf >> 8) & 0xFF);
-    write_register(REG_FRF_LSB, frf & 0xFF);
+// Define a frequência de operação do chip (sinal)
+void sx1276_set_frequency(uint64_t frequency_hz) {
+    // Realiza a conversão do valor especificado para um número de 24 bits
+    uint64_t new_freq = (frequency_hz << 19) / 32000000;
+
+    // Escreve o valor especificado nos registradores
+    write_register(SPI_CHANNEL, REG_FRF_MSB, (uint8_t)(new_freq >> 16));
+    write_register(SPI_CHANNEL, REG_FRF_MID, (uint8_t)(new_freq >> 8));
+    write_register(SPI_CHANNEL, REG_FRF_LSB, (uint8_t)(new_freq >> 0));
 }
 
+// Inicializa o chip SX1276
 void sx1276_init() {
+    // Reseta o dispositivo
     sx1276_reset();
 
-    // Modo LoRa e standby
-    write_register(REG_OP_MODE, MODE_SLEEP | MODE_LORA);
+    // Coloca o chip no modo SLEEP
+    write_register(SPI_CHANNEL, REG_OP_MODE, MODE_SLEEP | MODE_LORA);
     sleep_ms(10);
 
-     // Ponteiro do FIFO
-    write_register(REG_FIFO_TX_BASE, 0x00);
-    write_register(REG_FIFO_ADDR_PTR, 0x00);
-    sleep_ms(10);
+    // Define a frequência de 915 MHz
+    sx1276_set_frequency(915000000);
 
-    // define modo idle
-    write_register(REG_OP_MODE, MODE_STDBY);
+    // ----
+    write_register(SPI_CHANNEL, REG_FIFO_TX_BASE, 0);
     sleep_ms(10);
 
     // Configurações do modem
-    write_register(REG_MODEM_CONFIG1, 0x72); // BW=125kHz, CR=4/5
-    write_register(REG_MODEM_CONFIG2, 0x74); // SF=7, CRC on
-    write_register(REG_MODEM_CONFIG3, 0x04); // AgcAutoOn
-    write_register(REG_20_PREAMBLE_MSB, 0);
-    write_register(REG_21_PREAMBLE_LSB, 8);
+    write_register(SPI_CHANNEL, REG_MODEM_CONFIG1, 0x72); // BW=125kHz, CR=4/5
+    write_register(SPI_CHANNEL, REG_MODEM_CONFIG2, 0x74); // SF=7, CRC on
+    write_register(SPI_CHANNEL, REG_MODEM_CONFIG3, 0x04); // AgcAutoOn
+    write_register(SPI_CHANNEL, REG_20_PREAMBLE_MSB, 0);
+    write_register(SPI_CHANNEL, REG_21_PREAMBLE_LSB, 8);
+    write_register(SPI_CHANNEL, REG_PA_CONFIG, 0x8F); // PA_BOOST +17 dBm
+    sleep_ms(10);
 
-     // Frequência 915 MHz
-    sx1276_set_frequency(915000000);
+    // define modo idle
+    write_register(SPI_CHANNEL, REG_FIFO_ADDR_PTR, 0x00);
 
-    // Potência de transmissão
-    write_register(REG_PA_CONFIG, 0x8F); // PA_BOOST +17 dBm
+    // define modo idle
+    write_register(SPI_CHANNEL, REG_OP_MODE, MODE_STDBY);
+    sleep_ms(10);
 }
 
 void sx1276_transmit(const uint8_t *data, uint8_t len) {
@@ -169,22 +177,23 @@ static char buffer[100];
 int main() {
     stdio_init_all();
 
-    spi_init(SPI_PORT, 5000000);
-    spi_set_format(SPI_PORT, 8, 0, 0, 0);
+    // Configuração da interface SPI
+    spi_init(SPI_CHANNEL, SPI_BAUD_RATE);
+    spi_set_format(SPI_CHANNEL, 8, 0, 0, 0);
 
-    gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
-    gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
-    gpio_set_function(PIN_SCK, GPIO_FUNC_SPI);
+    gpio_set_function(SCK_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(MOSI_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(MISO_PIN, GPIO_FUNC_SPI);
 
-    // pinos do spi
-    gpio_init(PIN_CS);
-    gpio_set_dir(PIN_CS, GPIO_OUT);
-    gpio_put(PIN_CS, 1);
+    // Pinos de seleção SPI e de reset para o módulo RFM95W
+    gpio_init(CS_PIN);
+    gpio_set_dir(CS_PIN, GPIO_OUT);
+    gpio_put(CS_PIN, 1);
 
-    gpio_init(PIN_RST);
-    gpio_set_dir(PIN_RST, GPIO_OUT);
+    gpio_init(RST_PIN);
+    gpio_set_dir(RST_PIN, GPIO_OUT);
 
-     // Inicialização dos botões
+    // Inicialização dos botões
     btns_init();
 
     // Inicialização do LED RGB
@@ -203,7 +212,7 @@ int main() {
     ssd1306_fill(&ssd, false);
     ssd1306_send_data(&ssd);
 
-    // Inicializa rádio
+    // Inicializa o módulo RFM95W
     sx1276_init();
 
     printf("Tudo pronto...\n");
@@ -223,13 +232,13 @@ int main() {
     sleep_ms(4000);
 
     while (1) {
-        sleep_ms(2000);
-
         const char *msg = "Ola LoRa";
         printf("Transmitindo: %s\n", msg);
         sx1276_transmit((const uint8_t *)msg, strlen(msg));
 
         printf("Transmissão finalizada.\n");
+
+        sleep_ms(3000);
 
         // uint8_t buffer[64];
         // int len = sx1276_receive(buffer, sizeof(buffer));
