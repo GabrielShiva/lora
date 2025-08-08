@@ -45,6 +45,13 @@ typedef struct sensors_data {
 
 static sensors_data_t sensors_data = {0.0f, 0.0f, 0.0f, 0.0f};
 
+typedef struct {
+    int32_t pressure;     // in hPa × 100
+    int16_t temperature;  // in °C × 100
+    int16_t humidity;     // in %RH × 100
+    int32_t altitude;     // in meters × 100
+} sensors_packet_t;
+
 // Seleciona o dispositivo de comunicação no barramento SPI
 void select_slave(uint chip_select) {
     gpio_put(chip_select, 0);
@@ -251,6 +258,31 @@ uint8_t sx1276_receive(uint8_t *buffer, uint8_t max_len) {
     return num_bytes_pckt;
 }
 
+// Converte os dados do sensor de float para int
+sensors_packet_t convert_to_packet(const sensors_data_t *data) {
+    sensors_packet_t pkt;
+    pkt.pressure = (int32_t)(data->pressure * 100);
+    pkt.temperature = (int16_t)(data->temperature * 100);
+    pkt.humidity = (int16_t)(data->humidity * 100);
+    pkt.altitude = (int32_t)(data->altitude * 100);
+    return pkt;
+}
+
+// Converte os dados de bytes para float
+sensors_data_t decode_sensor_data(uint8_t *buffer) {
+    sensors_data_t data;
+    sensors_packet_t pkt;
+
+    memcpy(&pkt, buffer, sizeof(pkt));
+
+    data.pressure = pkt.pressure / 100.0f;
+    data.temperature = pkt.temperature / 100.0f;
+    data.humidity = pkt.humidity / 100.0f;
+    data.altitude = pkt.altitude / 100.0f;
+
+    return data;
+}
+
 // Função responsável por realizar o tratamento das interrupções geradas pelos botões
 void gpio_irq_handler(uint gpio, uint32_t events) {
     uint32_t current_time = to_ms_since_boot(get_absolute_time());
@@ -372,6 +404,11 @@ int main() {
         sensors_data.pressure = sensors_data.pressure / 100.0f;
         sensors_data.altitude = calculate_altitude(sensors_data.pressure * 100.0);
 
+        // Converte o dado de float para inteiro
+        sensors_packet_t packet = convert_to_packet(&sensors_data);
+        uint8_t tx_buffer[sizeof(packet)];
+        memcpy(tx_buffer, &packet, sizeof(packet));
+
         printf("Pressao: %.2f hPa\n", sensors_data.pressure);
         printf("Temperatura: %.2f C\n", sensors_data.temperature);
         printf("Altitude: %.2f m\n", sensors_data.altitude);
@@ -415,12 +452,33 @@ int main() {
             // ssd1306_send_data(&ssd);
         }
 
+        sx1276_transmit(tx_buffer, sizeof(tx_buffer));
+
+        ///// ------------ RECEPTOR DOS SENSORES ------------------
+        // sensors_packet_t pkt;
+        // uint8_t rx_buffer[12];
+
+        // uint8_t received_len = sx1276_receive(rx_buffer, sizeof(rx_buffer));
+        // if (received_len == sizeof(rx_buffer)) {
+        //     sensors_data_t received_data = decode_sensor_data(rx_buffer);
+        //     printf("Recebido:\n");
+        //     printf("Pressao: %.2f hPa\n", received_data.pressure);
+        //     printf("Temperatura: %.2f °C\n", received_data.temperature);
+        //     printf("Umidade: %.2f %%\n", received_data.humidity);
+        //     printf("Altitude: %.2f m\n", received_data.altitude);
+        // } else {
+        //     printf("Erro\n");
+        // }
+
+        ////// --------------- EXEMPLO ----------------------------
+        // Transmissor
         // uint8_t msg[] = "Hello, World!";
 
         // sx1276_transmit(msg, sizeof(msg) - 1);
 
         // sleep_ms(3000);
 
+         // Receptor
         // Mensagens recebidas
         // uint8_t buffer[64];
         // uint8_t received = sx1276_receive(&buffer, sizeof(buffer));
