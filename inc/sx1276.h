@@ -8,6 +8,7 @@
 #define REG_PA_CONFIG       0x09
 #define REG_FIFO_ADDR_PTR   0x0D
 #define REG_PAYLOAD_LENGTH  0x22
+#define REG_FIFO_RX_CURRENT_ADDR 0x10
 #define REG_IRQ_FLAGS       0x12
 #define REG_FIFO_TX_BASE_ADDR 0x0E
 #define REG_FIFO_RX_BASE_ADDR 0x0F

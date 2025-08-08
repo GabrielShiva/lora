@@ -105,7 +105,7 @@ void sx1276_init() {
     // BW=125 kHz, CR=4/5, Header explícito (ImplicitHeaderMode = 0 -> não é necessário indicar o tamanho do payload no registrador RegPayloadLength)
     // SF=7 (0111), TxContinuousMode=0 (envio de um pacote apenas), RxPayloadCrcOn=1, SymbTimeout(9:8)=0x00
     // 0000 (não representa nada), LowDataRateOptimize=0 (desabilitado), AgcAutoOn=1, 00 (reservado)
-    write_register(SPI_CHANNEL, REG_MODEM_CONFIG1, 0x72); // 0b01110010
+    write_register(SPI_CHANNEL, REG_MODEM_CONFIG1, 0x73); // 0b01110011
     write_register(SPI_CHANNEL, REG_MODEM_CONFIG2, 0x74); // 0b01110100
     write_register(SPI_CHANNEL, REG_MODEM_CONFIG3, 0x04); // 0b00000100
 
@@ -147,66 +147,87 @@ void sx1276_transmit(uint8_t *data, uint8_t len) {
     // Define a posição inicial do ponteiro do buffer do FIFO para o endereço inicial do TX (0x00)
     write_register(SPI_CHANNEL, REG_FIFO_ADDR_PTR, 0x00);
 
+    // Define o tamanho do payload que será enviado (obrigatório para o modo com header implícito no registrador RegOpMode)
+    write_register(SPI_CHANNEL, REG_PAYLOAD_LENGTH, len);
+
     // Escreve os dados no buffer do FIFO
-    for (int i = 0; i < len; i++) {
+    for (uint8_t i = 0; i < len; i++) {
         write_register(SPI_CHANNEL, REG_FIFO, data[i]);
     }
 
-    // Define o tamanho do payload que será enviado
-    write_register(SPI_CHANNEL, REG_PAYLOAD_LENGTH, len);
-
-    // Limpa as flags de interrupção
+    // Limpa todas as flags de interrupção (0b11111111)
+    // Mais informações podem ser encontradas no item 4.1.2.4 do doc do SX1276
     write_register(SPI_CHANNEL, REG_IRQ_FLAGS, 0xFF);
 
     // Define o modo de transmissão (TX)
     write_register(SPI_CHANNEL, REG_OP_MODE, MODE_LORA | MODE_TX);
 
-    // Espera até o bit TX_DONE do registrador RegIrqFlags ser setado
+    // Verifica por meio do pooling se a transmissão terminou (bit TX_DONE do registrador RegIrqFlags será setado)
     while ((read_register(SPI_CHANNEL, REG_IRQ_FLAGS) & 0x08) == 0) {
         tight_loop_contents();
     }
 
+    // Ao finalizar o envio dos pacotes de dados o dispositivo entre em modo standby automáticamente (pode ser visto em Data Transmission Sequence)
+
     // Limpa as flags de interrupção
     write_register(SPI_CHANNEL, REG_IRQ_FLAGS, 0xFF);
 
-    // Define o modo de standby
-    write_register(SPI_CHANNEL, REG_OP_MODE, MODE_LORA | MODE_STDBY);
 
     printf("Transmissão de dados realizada.\n");
 }
 
-int sx1276_receive(uint8_t *buffer, uint8_t max_len) {
-    // Modo LoRa + Standby
+uint8_t sx1276_receive(uint8_t *buffer, uint8_t max_len) {
+    // Coloca o chip em modo de standby (necessário para realizar transmissão)
     write_register(SPI_CHANNEL, REG_OP_MODE, MODE_LORA | MODE_STDBY);
-    write_register(SPI_CHANNEL, REG_IRQ_FLAGS, 0xFF);  // Limpa qualquer flag anterior
 
-    // Ponteiro FIFO de recepção
+    // Limpa todas as flags de interrupção (0b11111111)
+    // Mais informações podem ser encontradas no item 4.1.2.4 do doc do SX1276
+    write_register(SPI_CHANNEL, REG_IRQ_FLAGS, 0xFF);
+
+    // Define a posição inicial do ponteiro do buffer do FIFO para o endereço inicial do RX (0x00)
     write_register(SPI_CHANNEL, REG_FIFO_ADDR_PTR, 0x00);
 
     // Ativa modo RX contínuo
     write_register(SPI_CHANNEL, REG_OP_MODE, MODE_LORA | 0x05);  // RX_CONTINUOUS
 
     // Espera o pacote ser recebido (RX_DONE)
-    while ((read_register(SPI_CHANNEL, REG_IRQ_FLAGS) & 0x40) == 0) {
-        tight_loop_contents();  // Espera ativamente
+    while ((read_register(SPI_CHANNEL, REG_IRQ_FLAGS) & (1 << 6)) == 0) {
+        tight_loop_contents();
+    }
+
+    // Verificar se ocorreu erro (CRC) -> Flag PayloadCrcError
+    uint8_t irq_flags = read_register(SPI_CHANNEL, REG_IRQ_FLAGS);
+    if (irq_flags & (1 << 5)) {
+        write_register(SPI_CHANNEL, REG_IRQ_FLAGS, 0xFF);
+        pritf("Erro em pacote recebido");
+        return 0;
     }
 
     // Le o comprimento do payload
-    uint8_t len = read_register(SPI_CHANNEL, REG_PAYLOAD_LENGTH);
-    if (len > max_len) len = max_len;
+    uint8_t num_bytes_pckt = (uint8_t)read_register(SPI_CHANNEL, REG_RX_NB_BYTES);
+    if (num_bytes_pckt > max_len) {
+        num_bytes_pckt = max_len;
+    }
 
-    // Ponteiro para onde o pacote foi armazenado no FIFO
-    uint8_t fifo_rx_current_addr = read_register(SPI_CHANNEL, 0x10); // REG_FIFO_RX_CURRENT_ADDR
-    write_register(SPI_CHANNEL, REG_FIFO_ADDR_PTR, fifo_rx_current_addr);
+    // Obtém o endereço do local da memória em que o último pacote foi armazenado no FIFO
+    // Coloca o ponteiro no local da memória onde o último pacote foi armazenado no FIFO
+    uint8_t current_addr = read_register(SPI_CHANNEL, REG_FIFO_RX_CURRENT_ADDR);
+    write_register(SPI_CHANNEL, REG_FIFO_ADDR_PTR, current_addr);
 
-    for (int i = 0; i < len; i++) {
+    // Armazena o pacote recebido na variável buffer
+    for (uint8_t i = 0; i < num_bytes_pckt; i++) {
         buffer[i] = read_register(SPI_CHANNEL, REG_FIFO);
     }
 
-    // Limpa flags de IRQ
+    // Limpa as flags de IRQ
     write_register(SPI_CHANNEL, REG_IRQ_FLAGS, 0xFF);
 
-    return len;
+    // Retorna ao modo standby (em modo RX contínuo ele não volta automáticamente)
+    write_register(SPI_CHANNEL, REG_OP_MODE, MODE_LORA | MODE_STDBY);
+
+    printf("Foram recebidos %d bytes. \n", num_bytes_pckt);
+
+    return num_bytes_pckt;
 }
 
 // Definição de variáveis para operação do display
@@ -278,12 +299,18 @@ int main() {
 
         sleep_ms(3000);
 
+        // Mensagens recebidas
         // uint8_t buffer[64];
-        // int len = sx1276_receive(buffer, sizeof(buffer));
+        // uint8_t received = sx1276_receive(&buffer, sizeof(buffer));
 
-        // buffer[len] = '\0';  // Garante término nulo para string
-        // printf("Recebido (%d bytes): %s\n", len, buffer);
-
-        // sleep_ms(500);  // Evita recepções seguidas muito rápidas
+        // if (received > 0) {
+        //     printf("Mensagem recebida: ");
+        //     for (uint8_t i = 0; i < received; i++) {
+        //         putchar(buffer[i]);
+        //     }
+        //     printf("\n");
+        // }
     }
+
+    return 0;
 }
