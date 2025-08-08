@@ -12,6 +12,8 @@
 #include "inc/display/ssd1306.h"
 #include "inc/i2c_protocol/i2c_protocol.h"
 #include "inc/led_rgb/led.h"
+#include "inc/sensors/aht20.h"
+#include "inc/sensors/bmp280.h"
 
 #include "inc/sx1276.h"
 
@@ -23,6 +25,25 @@
 #define MISO_PIN 16   // SPI0 RX
 #define CS_PIN   17   // Seleção de dispositivo
 #define RST_PIN  20   // Reset
+
+// Definição de variáveis e macros importantes para o debounce dos botões
+#define DEBOUNCE_TIME 260
+
+static volatile uint32_t last_btn_a_press = 0;
+static volatile uint32_t last_btn_b_press = 0;
+
+// Define a página que é exibida no display
+static volatile bool display_page = 0;
+
+// Definições de estrutura e variável que armazena os dados coletados pelos sensores
+typedef struct sensors_data {
+    float pressure;
+    float temperature;
+    float humidity;
+    float altitude;
+} sensors_data_t;
+
+static sensors_data_t sensors_data = {0.0f, 0.0f, 0.0f, 0.0f};
 
 // Seleciona o dispositivo de comunicação no barramento SPI
 void select_slave(uint chip_select) {
@@ -199,7 +220,7 @@ uint8_t sx1276_receive(uint8_t *buffer, uint8_t max_len) {
     uint8_t irq_flags = read_register(SPI_CHANNEL, REG_IRQ_FLAGS);
     if (irq_flags & (1 << 5)) {
         write_register(SPI_CHANNEL, REG_IRQ_FLAGS, 0xFF);
-        pritf("Erro em pacote recebido");
+        printf("Erro em pacote recebido");
         return 0;
     }
 
@@ -230,6 +251,21 @@ uint8_t sx1276_receive(uint8_t *buffer, uint8_t max_len) {
     return num_bytes_pckt;
 }
 
+// Função responsável por realizar o tratamento das interrupções geradas pelos botões
+void gpio_irq_handler(uint gpio, uint32_t events) {
+    uint32_t current_time = to_ms_since_boot(get_absolute_time());
+
+    // Muda a página exibida no display
+    if (gpio == BTN_A_PIN && (current_time - last_btn_a_press > DEBOUNCE_TIME)) {
+        last_btn_a_press = current_time;
+        display_page = !display_page;
+    // Coloca o raspberry no modo de BOOTSEL
+    } else if (gpio == BTN_B_PIN && (current_time - last_btn_b_press > DEBOUNCE_TIME)) {
+        last_btn_b_press = current_time;
+        reset_usb_boot(0, 0);
+    }
+}
+
 // Definição de variáveis para operação do display
 static ssd1306_t ssd;
 static bool color = true;
@@ -257,6 +293,9 @@ int main() {
     // Inicialização dos botões
     btns_init();
 
+    gpio_set_irq_enabled_with_callback(BTN_B_PIN, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
+    gpio_set_irq_enabled(BTN_A_PIN, GPIO_IRQ_EDGE_RISE, true);
+
     // Inicialização do LED RGB
     leds_init();
 
@@ -273,31 +312,114 @@ int main() {
     ssd1306_fill(&ssd, false);
     ssd1306_send_data(&ssd);
 
+    ssd1306_fill(&ssd, !color);
+    ssd1306_send_data(&ssd);
+
+    sprintf(buffer, "Iniciando...");
+    ssd1306_draw_string(&ssd, buffer, 5, 30);
+    ssd1306_send_data(&ssd);
+
     // Inicializa o módulo RFM95W
     sx1276_init();
+
+    //Inicialização do barramento I2C para os sensores
+    i2c_setup(I2C0_SDA, I2C0_SCL);
+
+    // Inicializa o BMP280
+    bmp280_setup(I2C0_PORT);
+    struct bmp280_calib_param params;
+    bmp280_get_calib_params(I2C0_PORT, &params);
+
+    // Inicializa o AHT20
+    aht20_reset(I2C0_PORT);
+    aht20_setup(I2C0_PORT);
 
     printf("Tudo pronto...\n");
 
     ssd1306_fill(&ssd, !color);
     ssd1306_send_data(&ssd);
 
-    sprintf(buffer, "INICIALIZADO");
+    sprintf(buffer, "Tudo Pronto");
     ssd1306_draw_string(&ssd, buffer, 5, 30);
     ssd1306_send_data(&ssd);
-
-    sleep_ms(4000);
 
     ssd1306_fill(&ssd, !color);
     ssd1306_send_data(&ssd);
 
+    // Estrutura para armazenar os dados do sensor
+    AHT20_Data aht20_data;
+    int32_t raw_temp_bmp;
+    int32_t raw_pressure_bmp;
+
+    char str_tmp[5];
+    char str_alt[5];
+    char str_umi[5];
+    char str_pres[5];
+
     sleep_ms(4000);
 
     while (1) {
-        uint8_t msg[] = "Hello, World!";
+        // Realiza leitura do AHT20
+        aht20_read(I2C0_PORT, &aht20_data);
+        sensors_data.humidity = aht20_data.humidity;
 
-        sx1276_transmit(&msg, sizeof(msg) - 1);
+        // Realiza leitura do BMP280
+        bmp280_read_raw(I2C0_PORT, &raw_temp_bmp, &raw_pressure_bmp);
+        sensors_data.temperature = bmp280_convert_temp(raw_temp_bmp, &params);
+        sensors_data.temperature = sensors_data.temperature / 100.0f;
 
-        sleep_ms(3000);
+        sensors_data.pressure = bmp280_convert_pressure(raw_pressure_bmp, raw_temp_bmp, &params);
+        sensors_data.pressure = sensors_data.pressure / 100.0f;
+        sensors_data.altitude = calculate_altitude(sensors_data.pressure * 100.0);
+
+        printf("Pressao: %.2f hPa\n", sensors_data.pressure);
+        printf("Temperatura: %.2f C\n", sensors_data.temperature);
+        printf("Altitude: %.2f m\n", sensors_data.altitude);
+        printf("Umidade: %.2f %%\n", sensors_data.humidity);
+
+        if (display_page) {
+            // Exibe os dados no display
+            sprintf(str_tmp, "%.1f ºC", sensors_data.temperature);
+            sprintf(str_alt, "%.0f m", sensors_data.altitude);
+            sprintf(str_umi, "%.1f %%", sensors_data.humidity);
+            sprintf(str_pres, "%.1f hPa", sensors_data.pressure);
+
+            //  Atualiza o conteúdo do display com animações
+            ssd1306_fill(&ssd, !color);
+            ssd1306_rect(&ssd, 2, 2, 124, 62, true, false);
+            ssd1306_draw_string(&ssd, "ESTACAO", 4, 6);
+            ssd1306_draw_string(&ssd, "LORA", 4, 14);
+            ssd1306_line(&ssd, 3, 23, 123, 23, true); // linha horizontal - primeira
+            ssd1306_line(&ssd, 51, 23, 51, 63, true); // linha vertical
+            ssd1306_draw_string(&ssd, "TEMP", 4, 25);
+            sprintf(str_tmp, "%.1fC", sensors_data.temperature);
+            ssd1306_draw_string(&ssd, str_tmp, 54, 25);
+            ssd1306_draw_string(&ssd, "UMID", 4, 35);
+            sprintf(str_umi, "%.1f%%", sensors_data.humidity);
+            ssd1306_draw_string(&ssd, str_umi, 54, 35);
+            ssd1306_draw_string(&ssd, "ALTI", 4, 45);
+            sprintf(str_alt, "%.1fm", sensors_data.altitude);
+            ssd1306_draw_string(&ssd, str_alt, 54, 45);
+            ssd1306_draw_string(&ssd, "PRES", 4, 55);
+            sprintf(str_pres, "%.1fhPa", sensors_data.pressure);
+            ssd1306_draw_string(&ssd, str_pres, 54, 55);
+            ssd1306_send_data(&ssd);
+        } else {
+            ssd1306_fill(&ssd, !color);
+            ssd1306_rect(&ssd, 2, 2, 124, 62, true, false);
+            ssd1306_draw_string(&ssd, "ESTACAO", 4, 6);
+            ssd1306_draw_string(&ssd, "LORA", 4, 14);
+            // ssd1306_line(&ssd, 3, 23, 123, 23, true); // linha horizontal - primeira
+            // ssd1306_draw_string(&ssd, "IP", 4, 25);
+            // ssd1306_draw_string(&ssd, ip_str, 4, 33);
+            // ssd1306_send_data(&ssd);
+        }
+
+        // uint8_t msg[] = "Hello, World!";
+
+        // sx1276_transmit(msg, sizeof(msg) - 1);
+
+        // sleep_ms(3000);
 
         // Mensagens recebidas
         // uint8_t buffer[64];

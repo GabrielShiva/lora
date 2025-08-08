@@ -46,6 +46,8 @@ add_executable(lora_project
     inc/led_rgb/led.c
     inc/i2c_protocol/i2c_protocol.c
     inc/display/ssd1306.c
+    inc/sensors/aht20.c
+    inc/sensors/bmp280.c
 )
 
 pico_set_program_name(lora_project "lora_project")
