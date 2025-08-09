@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <string.h>
+
 #include "pico/stdlib.h"
+#include "pico/bootrom.h"
 
 #include "hardware/spi.h"
 #include "hardware/i2c.h"
@@ -130,19 +132,17 @@ void sx1276_init() {
     sx1276_set_frequency(915000000);
 
     // Configurações do modem
-    // BW=125 kHz, CR=4/5, Header explícito (ImplicitHeaderMode = 0 -> não é necessário indicar o tamanho do payload no registrador RegPayloadLength)
-    // SF=7 (0111), TxContinuousMode=0 (envio de um pacote apenas), RxPayloadCrcOn=1, SymbTimeout(9:8)=0x00
-    // 0000 (não representa nada), LowDataRateOptimize=0 (desabilitado), AgcAutoOn=1, 00 (reservado)
-    write_register(SPI_CHANNEL, REG_MODEM_CONFIG1, 0x73); // 0b01110011
-    write_register(SPI_CHANNEL, REG_MODEM_CONFIG2, 0x74); // 0b01110100
+    write_register(SPI_CHANNEL, REG_MODEM_CONFIG1, 0x72); // 0b01110011
+    write_register(SPI_CHANNEL, REG_MODEM_CONFIG2, 0x77);
     write_register(SPI_CHANNEL, REG_MODEM_CONFIG3, 0x04); // 0b00000100
 
     // Configuração de preâmbulo igual à 8
     write_register(SPI_CHANNEL, REG_20_PREAMBLE_MSB, 0);
     write_register(SPI_CHANNEL, REG_21_PREAMBLE_LSB, 8);
 
-    // Define a potência (17 dBm)
-    write_register(SPI_CHANNEL, REG_PA_CONFIG, 0x8F);
+    // Define a potência (20 dBm)
+    write_register(SPI_CHANNEL, REG_PA_CONFIG, 0x8F); // PA_BOOST, max power
+    write_register(SPI_CHANNEL, REG_PA_DAC, 0x87);
     sleep_ms(10);
 
     // Define o endereço do FIFO aonde os dados devem ser colocados
@@ -196,10 +196,10 @@ void sx1276_transmit(uint8_t *data, uint8_t len) {
     }
 
     // Ao finalizar o envio dos pacotes de dados o dispositivo entre em modo standby automáticamente (pode ser visto em Data Transmission Sequence)
+    write_register(SPI_CHANNEL, REG_OP_MODE, MODE_LORA | MODE_STDBY);
 
     // Limpa as flags de interrupção
     write_register(SPI_CHANNEL, REG_IRQ_FLAGS, 0xFF);
-
 
     printf("Transmissão de dados realizada.\n");
 }
@@ -388,71 +388,86 @@ int main() {
     char str_umi[5];
     char str_pres[5];
 
-    sleep_ms(4000);
+    sleep_ms(2000);
+    printf("Começando teste do transmissor!\n");
 
-    while (1) {
-        // Realiza leitura do AHT20
-        aht20_read(I2C0_PORT, &aht20_data);
-        sensors_data.humidity = aht20_data.humidity;
 
-        // Realiza leitura do BMP280
-        bmp280_read_raw(I2C0_PORT, &raw_temp_bmp, &raw_pressure_bmp);
-        sensors_data.temperature = bmp280_convert_temp(raw_temp_bmp, &params);
-        sensors_data.temperature = sensors_data.temperature / 100.0f;
+    static uint32_t counter = 0;
+    while (true) {
+        // Transmissor
+        char message[50];
+        sprintf(message, "Pacote #%d - Hora: %d ms", counter++, time_us_32() / 1000);
+        sx1276_transmit((uint8_t*)message, strlen(message));
 
-        sensors_data.pressure = bmp280_convert_pressure(raw_pressure_bmp, raw_temp_bmp, &params);
-        sensors_data.pressure = sensors_data.pressure / 100.0f;
-        sensors_data.altitude = calculate_altitude(sensors_data.pressure * 100.0);
+        printf("Enviado: %s\n", message);
+        sleep_ms(3000);
 
-        // Converte o dado de float para inteiro
-        sensors_packet_t packet = convert_to_packet(&sensors_data);
-        uint8_t tx_buffer[sizeof(packet)];
-        memcpy(tx_buffer, &packet, sizeof(packet));
+        sleep_ms(3000);
+    }
 
-        printf("Pressao: %.2f hPa\n", sensors_data.pressure);
-        printf("Temperatura: %.2f C\n", sensors_data.temperature);
-        printf("Altitude: %.2f m\n", sensors_data.altitude);
-        printf("Umidade: %.2f %%\n", sensors_data.humidity);
+    // while (1) {
+        // // Realiza leitura do AHT20
+        // aht20_read(I2C0_PORT, &aht20_data);
+        // sensors_data.humidity = aht20_data.humidity;
 
-        if (display_page) {
-            // Exibe os dados no display
-            sprintf(str_tmp, "%.1f ºC", sensors_data.temperature);
-            sprintf(str_alt, "%.0f m", sensors_data.altitude);
-            sprintf(str_umi, "%.1f %%", sensors_data.humidity);
-            sprintf(str_pres, "%.1f hPa", sensors_data.pressure);
+        // // Realiza leitura do BMP280
+        // bmp280_read_raw(I2C0_PORT, &raw_temp_bmp, &raw_pressure_bmp);
+        // sensors_data.temperature = bmp280_convert_temp(raw_temp_bmp, &params);
+        // sensors_data.temperature = sensors_data.temperature / 100.0f;
 
-            //  Atualiza o conteúdo do display com animações
-            ssd1306_fill(&ssd, !color);
-            ssd1306_rect(&ssd, 2, 2, 124, 62, true, false);
-            ssd1306_draw_string(&ssd, "ESTACAO", 4, 6);
-            ssd1306_draw_string(&ssd, "LORA", 4, 14);
-            ssd1306_line(&ssd, 3, 23, 123, 23, true); // linha horizontal - primeira
-            ssd1306_line(&ssd, 51, 23, 51, 63, true); // linha vertical
-            ssd1306_draw_string(&ssd, "TEMP", 4, 25);
-            sprintf(str_tmp, "%.1fC", sensors_data.temperature);
-            ssd1306_draw_string(&ssd, str_tmp, 54, 25);
-            ssd1306_draw_string(&ssd, "UMID", 4, 35);
-            sprintf(str_umi, "%.1f%%", sensors_data.humidity);
-            ssd1306_draw_string(&ssd, str_umi, 54, 35);
-            ssd1306_draw_string(&ssd, "ALTI", 4, 45);
-            sprintf(str_alt, "%.1fm", sensors_data.altitude);
-            ssd1306_draw_string(&ssd, str_alt, 54, 45);
-            ssd1306_draw_string(&ssd, "PRES", 4, 55);
-            sprintf(str_pres, "%.1fhPa", sensors_data.pressure);
-            ssd1306_draw_string(&ssd, str_pres, 54, 55);
-            ssd1306_send_data(&ssd);
-        } else {
-            ssd1306_fill(&ssd, !color);
-            ssd1306_rect(&ssd, 2, 2, 124, 62, true, false);
-            ssd1306_draw_string(&ssd, "ESTACAO", 4, 6);
-            ssd1306_draw_string(&ssd, "LORA", 4, 14);
-            // ssd1306_line(&ssd, 3, 23, 123, 23, true); // linha horizontal - primeira
-            // ssd1306_draw_string(&ssd, "IP", 4, 25);
-            // ssd1306_draw_string(&ssd, ip_str, 4, 33);
-            // ssd1306_send_data(&ssd);
-        }
+        // sensors_data.pressure = bmp280_convert_pressure(raw_pressure_bmp, raw_temp_bmp, &params);
+        // sensors_data.pressure = sensors_data.pressure / 100.0f;
+        // sensors_data.altitude = calculate_altitude(sensors_data.pressure * 100.0);
 
-        sx1276_transmit(tx_buffer, sizeof(tx_buffer));
+        // // Converte o dado de float para inteiro
+        // sensors_packet_t packet = convert_to_packet(&sensors_data);
+        // uint8_t tx_buffer[sizeof(packet)];
+        // memcpy(tx_buffer, &packet, sizeof(packet));
+
+        // printf("Pressao: %.2f hPa\n", sensors_data.pressure);
+        // printf("Temperatura: %.2f C\n", sensors_data.temperature);
+        // printf("Altitude: %.2f m\n", sensors_data.altitude);
+        // printf("Umidade: %.2f %%\n", sensors_data.humidity);
+
+        // if (display_page) {
+        //     // Exibe os dados no display
+        //     sprintf(str_tmp, "%.1f ºC", sensors_data.temperature);
+        //     sprintf(str_alt, "%.0f m", sensors_data.altitude);
+        //     sprintf(str_umi, "%.1f %%", sensors_data.humidity);
+        //     sprintf(str_pres, "%.1f hPa", sensors_data.pressure);
+
+        //     //  Atualiza o conteúdo do display com animações
+        //     ssd1306_fill(&ssd, !color);
+        //     ssd1306_rect(&ssd, 2, 2, 124, 62, true, false);
+        //     ssd1306_draw_string(&ssd, "ESTACAO", 4, 6);
+        //     ssd1306_draw_string(&ssd, "LORA", 4, 14);
+        //     ssd1306_line(&ssd, 3, 23, 123, 23, true); // linha horizontal - primeira
+        //     ssd1306_line(&ssd, 51, 23, 51, 63, true); // linha vertical
+        //     ssd1306_draw_string(&ssd, "TEMP", 4, 25);
+        //     sprintf(str_tmp, "%.1fC", sensors_data.temperature);
+        //     ssd1306_draw_string(&ssd, str_tmp, 54, 25);
+        //     ssd1306_draw_string(&ssd, "UMID", 4, 35);
+        //     sprintf(str_umi, "%.1f%%", sensors_data.humidity);
+        //     ssd1306_draw_string(&ssd, str_umi, 54, 35);
+        //     ssd1306_draw_string(&ssd, "ALTI", 4, 45);
+        //     sprintf(str_alt, "%.1fm", sensors_data.altitude);
+        //     ssd1306_draw_string(&ssd, str_alt, 54, 45);
+        //     ssd1306_draw_string(&ssd, "PRES", 4, 55);
+        //     sprintf(str_pres, "%.1fhPa", sensors_data.pressure);
+        //     ssd1306_draw_string(&ssd, str_pres, 54, 55);
+        //     ssd1306_send_data(&ssd);
+        // } else {
+        //     ssd1306_fill(&ssd, !color);
+        //     ssd1306_rect(&ssd, 2, 2, 124, 62, true, false);
+        //     ssd1306_draw_string(&ssd, "ESTACAO", 4, 6);
+        //     ssd1306_draw_string(&ssd, "LORA", 4, 14);
+        //     // ssd1306_line(&ssd, 3, 23, 123, 23, true); // linha horizontal - primeira
+        //     // ssd1306_draw_string(&ssd, "IP", 4, 25);
+        //     // ssd1306_draw_string(&ssd, ip_str, 4, 33);
+        //     // ssd1306_send_data(&ssd);
+        // }
+
+        // sx1276_transmit(tx_buffer, sizeof(tx_buffer));
 
         ///// ------------ RECEPTOR DOS SENSORES ------------------
         // sensors_packet_t pkt;
@@ -490,7 +505,7 @@ int main() {
         //     }
         //     printf("\n");
         // }
-    }
+    // }
 
     return 0;
 }

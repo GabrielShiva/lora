@@ -26,6 +26,7 @@
 #define REG_20_PREAMBLE_MSB 0x20
 #define REG_21_PREAMBLE_LSB 0x21
 #define REG_RX_NB_BYTES     0x13
+#define REG_PA_DAC          0x4D
 
 // Define o modo LORA para o chip (o outro é  o FSK/OOK)
 #define MODE_LORA           0x80
