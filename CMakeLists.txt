@@ -28,6 +28,8 @@ set(PICO_BOARD pico_w CACHE STRING "Board type")
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
+set(FREERTOS_KERNEL_PATH "C:/FreeRTOS-Kernel") 
+include(${FREERTOS_KERNEL_PATH}/portable/ThirdParty/GCC/RP2040/FreeRTOS_Kernel_import.cmake)
 project(lora_project C CXX ASM)
 
 # Initialise the Raspberry Pi Pico SDK
@@ -64,6 +66,8 @@ target_link_libraries(lora_project
     hardware_pwm
     hardware_adc
     hardware_spi
+    FreeRTOS-Kernel
+    FreeRTOS-Kernel-Heap4
 )
 
 # Add the standard include files to the build

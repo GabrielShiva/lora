@@ -17,6 +17,13 @@
 #include "inc/sensors/aht20.h"
 #include "inc/sensors/bmp280.h"
 
+#include "FreeRTOS.h"
+#include "FreeRTOSConfig.h"
+#include "task.h"
+#include "semphr.h"
+#include "queue.h"
+#include <math.h>
+
 #include "inc/sx1276.h"
 
 // SPI
@@ -53,6 +60,9 @@ typedef struct {
     int16_t humidity;     // in %RH × 100
     int32_t altitude;     // in meters × 100
 } sensors_packet_t;
+
+QueueHandle_t xBMPReadQueue;
+QueueHandle_t xAHTReadQueue;
 
 // Seleciona o dispositivo de comunicação no barramento SPI
 void select_slave(uint chip_select) {
@@ -161,16 +171,18 @@ void sx1276_init() {
     write_register(SPI_CHANNEL, REG_FIFO_ADDR_PTR, 0x00); // Indica em que endereço do FIFO deve começar a escrever os dados recebidos (TX ou RX) -> indica para qual endereço o ponteiro deve apontar
     sleep_ms(10);
 
+
     // define modo standby
     write_register(SPI_CHANNEL, REG_OP_MODE, MODE_STDBY);
     sleep_ms(10);
+
 }
 
 // Realiza a transmissão de dados
 void sx1276_transmit(uint8_t *data, uint8_t len) {
     // Coloca o chip em modo de standby (necessário para realizar transmissão)
     write_register(SPI_CHANNEL, REG_OP_MODE, MODE_LORA | MODE_STDBY);
-    sleep_ms(10);
+    vTaskDelay(pdMS_TO_TICKS(10));
 
     // Define a posição inicial do ponteiro do buffer do FIFO para o endereço inicial do TX (0x00)
     write_register(SPI_CHANNEL, REG_FIFO_ADDR_PTR, 0x00);
@@ -288,11 +300,7 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
     uint32_t current_time = to_ms_since_boot(get_absolute_time());
 
     // Muda a página exibida no display
-    if (gpio == BTN_A_PIN && (current_time - last_btn_a_press > DEBOUNCE_TIME)) {
-        last_btn_a_press = current_time;
-        display_page = !display_page;
-    // Coloca o raspberry no modo de BOOTSEL
-    } else if (gpio == BTN_B_PIN && (current_time - last_btn_b_press > DEBOUNCE_TIME)) {
+    if (gpio == BTN_B_PIN && (current_time - last_btn_b_press > DEBOUNCE_TIME)) {
         last_btn_b_press = current_time;
         reset_usb_boot(0, 0);
     }
@@ -302,6 +310,9 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
 static ssd1306_t ssd;
 static bool color = true;
 static char buffer[100];
+
+void vLoraTask();
+void vSensorRead();
 
 int main() {
     stdio_init_all();
@@ -326,10 +337,6 @@ int main() {
     btns_init();
 
     gpio_set_irq_enabled_with_callback(BTN_B_PIN, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
-    gpio_set_irq_enabled(BTN_A_PIN, GPIO_IRQ_EDGE_RISE, true);
-
-    // Inicialização do LED RGB
-    leds_init();
 
     //Inicialização do barramento I2C para o display
     i2c_setup(I2C1_SDA, I2C1_SCL);
@@ -357,15 +364,6 @@ int main() {
     //Inicialização do barramento I2C para os sensores
     i2c_setup(I2C0_SDA, I2C0_SCL);
 
-    // Inicializa o BMP280
-    bmp280_setup(I2C0_PORT);
-    struct bmp280_calib_param params;
-    bmp280_get_calib_params(I2C0_PORT, &params);
-
-    // Inicializa o AHT20
-    aht20_reset(I2C0_PORT);
-    aht20_setup(I2C0_PORT);
-
     printf("Tudo pronto...\n");
 
     ssd1306_fill(&ssd, !color);
@@ -378,134 +376,96 @@ int main() {
     ssd1306_fill(&ssd, !color);
     ssd1306_send_data(&ssd);
 
-    // Estrutura para armazenar os dados do sensor
-    AHT20_Data aht20_data;
-    int32_t raw_temp_bmp;
-    int32_t raw_pressure_bmp;
-
-    char str_tmp[5];
-    char str_alt[5];
-    char str_umi[5];
-    char str_pres[5];
-
     sleep_ms(2000);
     printf("Começando teste do transmissor!\n");
 
+    xAHTReadQueue = xQueueCreate(1, sizeof(AHT20_Data));
+    xBMPReadQueue = xQueueCreate(1, sizeof(BMP280_Data));
 
-    static uint32_t counter = 0;
-    while (true) {
-        // Transmissor
-        char message[50];
+    //xTaskCreate(vHelloTask, "Hello Task", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+    xTaskCreate(vSensorRead, "Sensor Read", 2048, NULL, tskIDLE_PRIORITY, NULL);
+    xTaskCreate(vLoraTask, "Connect task", 2048, NULL, tskIDLE_PRIORITY, NULL);
+    vTaskStartScheduler();
+    panic_unsupported();
+
+}
+
+void vLoraTask(){
+    // Transmissor
+
+    AHT20_Data aht_data;
+    BMP280_Data bmp_data;
+
+    char message[50];
+    uint32_t counter = 0;
+    printf("tarefa lora");
+
+    while (true)
+    {
+        xQueuePeek(xAHTReadQueue, &aht_data, 0);
+        xQueuePeek(xBMPReadQueue, &bmp_data, 0);
         sprintf(message, "Pacote #%d - Hora: %d ms", counter++, time_us_32() / 1000);
         sx1276_transmit((uint8_t*)message, strlen(message));
+        printf(message);
+        printf("\n");
+        sprintf(message, "%d - %.2f", counter++, aht_data.humidity);
+        sx1276_transmit((uint8_t*)message, strlen(message));
+        printf(message);
+        printf("\n");
+        sprintf(message, "%d - %.2f", counter++, aht_data.temperature);
+        sx1276_transmit((uint8_t*)message, strlen(message));
+        printf(message);
+        printf("\n");
 
         printf("Enviado: %s\n", message);
-        sleep_ms(3000);
-
-        sleep_ms(3000);
+        vTaskDelay(pdMS_TO_TICKS(2000));
     }
+}
 
-    // while (1) {
-        // // Realiza leitura do AHT20
-        // aht20_read(I2C0_PORT, &aht20_data);
-        // sensors_data.humidity = aht20_data.humidity;
+void vSensorRead(){
+    // Inicializa o BMP280
+    bmp280_setup(I2C0_PORT);
+    struct bmp280_calib_param params;
+    bmp280_get_calib_params(I2C0_PORT, &params);
 
-        // // Realiza leitura do BMP280
-        // bmp280_read_raw(I2C0_PORT, &raw_temp_bmp, &raw_pressure_bmp);
-        // sensors_data.temperature = bmp280_convert_temp(raw_temp_bmp, &params);
-        // sensors_data.temperature = sensors_data.temperature / 100.0f;
+    // Inicializa o AHT20
+    aht20_reset(I2C0_PORT);
+    aht20_setup(I2C0_PORT);
 
-        // sensors_data.pressure = bmp280_convert_pressure(raw_pressure_bmp, raw_temp_bmp, &params);
-        // sensors_data.pressure = sensors_data.pressure / 100.0f;
-        // sensors_data.altitude = calculate_altitude(sensors_data.pressure * 100.0);
+    // Estrutura para armazenar os dados do sensor
+    AHT20_Data aht_data;
+    BMP280_Data bmp_data;
+    int32_t raw_temp_bmp;
+    int32_t raw_pressure;
 
-        // // Converte o dado de float para inteiro
-        // sensors_packet_t packet = convert_to_packet(&sensors_data);
-        // uint8_t tx_buffer[sizeof(packet)];
-        // memcpy(tx_buffer, &packet, sizeof(packet));
+    while(true){
+        // Leitura do BMP280
+        bmp280_read_raw(I2C0_PORT, &raw_temp_bmp, &raw_pressure);
+        bmp_data.temperature = bmp280_convert_temp(raw_temp_bmp, &params);
+        bmp_data.pressure = bmp280_convert_pressure(raw_pressure, raw_temp_bmp, &params);
 
-        // printf("Pressao: %.2f hPa\n", sensors_data.pressure);
-        // printf("Temperatura: %.2f C\n", sensors_data.temperature);
-        // printf("Altitude: %.2f m\n", sensors_data.altitude);
-        // printf("Umidade: %.2f %%\n", sensors_data.humidity);
+        // Cálculo da altitude
+        bmp_data.altitude = calculate_altitude(bmp_data.pressure);
+        printf("tarefa do sensor!\n");
+        //printf("Pressao = %.3f kPa\n", bmp_data.pressure / 1000.0);
+        //printf("Temperatura BMP: = %.2f C\n", bmp_data.temperature / 100.0);
+        //printf("Altitude estimada: %.2f m\n", bmp_data.altitude);
 
-        // if (display_page) {
-        //     // Exibe os dados no display
-        //     sprintf(str_tmp, "%.1f ºC", sensors_data.temperature);
-        //     sprintf(str_alt, "%.0f m", sensors_data.altitude);
-        //     sprintf(str_umi, "%.1f %%", sensors_data.humidity);
-        //     sprintf(str_pres, "%.1f hPa", sensors_data.pressure);
+        // Leitura do AHT20
+        if (aht20_read(I2C0_PORT, &aht_data))
+        {
+            //printf("Temperatura AHT: %.2f C\n", aht_data.temperature);
+            //printf("Umidade: %.2f %%\n\n\n", aht_data.humidity);
+        }
+        else
+        {
+            //printf("Erro na leitura do AHT10!\n\n\n");
+        }
 
-        //     //  Atualiza o conteúdo do display com animações
-        //     ssd1306_fill(&ssd, !color);
-        //     ssd1306_rect(&ssd, 2, 2, 124, 62, true, false);
-        //     ssd1306_draw_string(&ssd, "ESTACAO", 4, 6);
-        //     ssd1306_draw_string(&ssd, "LORA", 4, 14);
-        //     ssd1306_line(&ssd, 3, 23, 123, 23, true); // linha horizontal - primeira
-        //     ssd1306_line(&ssd, 51, 23, 51, 63, true); // linha vertical
-        //     ssd1306_draw_string(&ssd, "TEMP", 4, 25);
-        //     sprintf(str_tmp, "%.1fC", sensors_data.temperature);
-        //     ssd1306_draw_string(&ssd, str_tmp, 54, 25);
-        //     ssd1306_draw_string(&ssd, "UMID", 4, 35);
-        //     sprintf(str_umi, "%.1f%%", sensors_data.humidity);
-        //     ssd1306_draw_string(&ssd, str_umi, 54, 35);
-        //     ssd1306_draw_string(&ssd, "ALTI", 4, 45);
-        //     sprintf(str_alt, "%.1fm", sensors_data.altitude);
-        //     ssd1306_draw_string(&ssd, str_alt, 54, 45);
-        //     ssd1306_draw_string(&ssd, "PRES", 4, 55);
-        //     sprintf(str_pres, "%.1fhPa", sensors_data.pressure);
-        //     ssd1306_draw_string(&ssd, str_pres, 54, 55);
-        //     ssd1306_send_data(&ssd);
-        // } else {
-        //     ssd1306_fill(&ssd, !color);
-        //     ssd1306_rect(&ssd, 2, 2, 124, 62, true, false);
-        //     ssd1306_draw_string(&ssd, "ESTACAO", 4, 6);
-        //     ssd1306_draw_string(&ssd, "LORA", 4, 14);
-        //     // ssd1306_line(&ssd, 3, 23, 123, 23, true); // linha horizontal - primeira
-        //     // ssd1306_draw_string(&ssd, "IP", 4, 25);
-        //     // ssd1306_draw_string(&ssd, ip_str, 4, 33);
-        //     // ssd1306_send_data(&ssd);
-        // }
-
-        // sx1276_transmit(tx_buffer, sizeof(tx_buffer));
-
-        ///// ------------ RECEPTOR DOS SENSORES ------------------
-        // sensors_packet_t pkt;
-        // uint8_t rx_buffer[12];
-
-        // uint8_t received_len = sx1276_receive(rx_buffer, sizeof(rx_buffer));
-        // if (received_len == sizeof(rx_buffer)) {
-        //     sensors_data_t received_data = decode_sensor_data(rx_buffer);
-        //     printf("Recebido:\n");
-        //     printf("Pressao: %.2f hPa\n", received_data.pressure);
-        //     printf("Temperatura: %.2f °C\n", received_data.temperature);
-        //     printf("Umidade: %.2f %%\n", received_data.humidity);
-        //     printf("Altitude: %.2f m\n", received_data.altitude);
-        // } else {
-        //     printf("Erro\n");
-        // }
-
-        ////// --------------- EXEMPLO ----------------------------
-        // Transmissor
-        // uint8_t msg[] = "Hello, World!";
-
-        // sx1276_transmit(msg, sizeof(msg) - 1);
-
-        // sleep_ms(3000);
-
-         // Receptor
-        // Mensagens recebidas
-        // uint8_t buffer[64];
-        // uint8_t received = sx1276_receive(&buffer, sizeof(buffer));
-
-        // if (received > 0) {
-        //     printf("Mensagem recebida: ");
-        //     for (uint8_t i = 0; i < received; i++) {
-        //         putchar(buffer[i]);
-        //     }
-        //     printf("\n");
-        // }
-    // }
-
-    return 0;
+        xQueueOverwrite(xAHTReadQueue, &aht_data);
+            //printf("FILA AHT CHEIA!");
+        xQueueOverwrite(xBMPReadQueue, &bmp_data);
+        
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }
