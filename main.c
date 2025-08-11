@@ -396,29 +396,33 @@ void vLoraTask(){
     AHT20_Data aht_data;
     BMP280_Data bmp_data;
 
-    char message[50];
+    char message[200];
     uint32_t counter = 0;
-    printf("tarefa lora");
+    //printf("tarefa lora");
 
     while (true)
     {
         xQueuePeek(xAHTReadQueue, &aht_data, 0);
         xQueuePeek(xBMPReadQueue, &bmp_data, 0);
+        memset(message, 0, sizeof(message));
         sprintf(message, "Pacote #%d - Hora: %d ms", counter++, time_us_32() / 1000);
         sx1276_transmit((uint8_t*)message, strlen(message));
         printf(message);
         printf("\n");
-        sprintf(message, "%d - %.2f", counter++, aht_data.humidity);
+        memset(message, 0, sizeof(message));
+        sprintf(message, "%d - Umidade: %.2f percent", counter, aht_data.humidity);
         sx1276_transmit((uint8_t*)message, strlen(message));
         printf(message);
         printf("\n");
-        sprintf(message, "%d - %.2f", counter++, aht_data.temperature);
+        sprintf(message, "%d - Temperatura: %.2f C", counter, aht_data.temperature);
         sx1276_transmit((uint8_t*)message, strlen(message));
         printf(message);
         printf("\n");
-
-        printf("Enviado: %s\n", message);
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        sprintf(message, "%d - Altitude (n. do mar): %.2fm", counter, bmp_data.altitude);
+        sx1276_transmit((uint8_t*)message, strlen(message));
+        printf(message);
+        printf("\n");
+        vTaskDelay(pdMS_TO_TICKS(3000));
     }
 }
 
@@ -446,7 +450,7 @@ void vSensorRead(){
 
         // Cálculo da altitude
         bmp_data.altitude = calculate_altitude(bmp_data.pressure);
-        printf("tarefa do sensor!\n");
+        //printf("tarefa do sensor!\n");
         //printf("Pressao = %.3f kPa\n", bmp_data.pressure / 1000.0);
         //printf("Temperatura BMP: = %.2f C\n", bmp_data.temperature / 100.0);
         //printf("Altitude estimada: %.2f m\n", bmp_data.altitude);
