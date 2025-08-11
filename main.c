@@ -27,20 +27,13 @@
 
 // Definições de estrutura e variável que armazena os dados coletados pelos sensores
 typedef struct sensors_data {
-    float pressure;
-    float temperature;
-    float humidity;
-    float altitude;
+    int32_t pressure; // hPa * 100
+    int16_t temperature; // ºC * 100
+    int16_t humidity; // %RH * 100
+    int32_t altitude; // m * 100
 } sensors_data_t;
 
-static sensors_data_t sensors_data = {0.0f, 0.0f, 0.0f, 0.0f};
-
-typedef struct {
-    int32_t pressure;     // in hPa × 100
-    int16_t temperature;  // in °C × 100
-    int16_t humidity;     // in %RH × 100
-    int32_t altitude;     // in meters × 100
-} sensors_packet_t;
+static sensors_data_t sensors_data = {0, 0, 0, 0};
 
 // Seleciona o dispositivo de comunicação no barramento SPI
 void select_slave(uint chip_select) {
@@ -380,7 +373,7 @@ int main() {
     sleep_ms(2000);
     printf("Começando teste do transmissor!\n");
 
-    const char *msg = "Hello LoRa";
+    const char *msg = "Ola LoRa";
     while (true) {
         printf("Enviando mensagem: %s\n", msg);
 
@@ -396,33 +389,27 @@ int main() {
     // while (1) {
         // // Realiza leitura do AHT20
         // aht20_read(I2C0_PORT, &aht20_data);
-        // sensors_data.humidity = aht20_data.humidity;
+        // sensors_data.humidity = (int32_t)(aht20_data.humidity * 100);
 
         // // Realiza leitura do BMP280
         // bmp280_read_raw(I2C0_PORT, &raw_temp_bmp, &raw_pressure_bmp);
         // sensors_data.temperature = bmp280_convert_temp(raw_temp_bmp, &params);
-        // sensors_data.temperature = sensors_data.temperature / 100.0f;
+        // sensors_data.temperature = (int16_t)(sensors_data.temperature / 100.0f * 100.0f);
 
         // sensors_data.pressure = bmp280_convert_pressure(raw_pressure_bmp, raw_temp_bmp, &params);
-        // sensors_data.pressure = sensors_data.pressure / 100.0f;
-        // sensors_data.altitude = calculate_altitude(sensors_data.pressure * 100.0);
+        // sensors_data.pressure = (int16_t)(sensors_data.pressure / 100.0f * 100.0f);
+        // sensors_data.altitude = (int32_t)(calculate_altitude(sensors_data.pressure * 100.0) * 100.0f);
 
-        // // Converte o dado de float para inteiro
-        // sensors_packet_t packet = convert_to_packet(&sensors_data);
-        // uint8_t tx_buffer[sizeof(packet)];
-        // memcpy(tx_buffer, &packet, sizeof(packet));
+        // printf("Pressao: %.2f hPa\n", sensors_data.pressure * 100.0f);
+        // printf("Temperatura: %.2f C\n", sensors_data.temperature * 100.0f);
+        // printf("Altitude: %.2f m\n", sensors_data.altitude * 100.0f);
+        // printf("Umidade: %.2f %%\n", sensors_data.humidity * 100.0f);
 
-        // printf("Pressao: %.2f hPa\n", sensors_data.pressure);
-        // printf("Temperatura: %.2f C\n", sensors_data.temperature);
-        // printf("Altitude: %.2f m\n", sensors_data.altitude);
-        // printf("Umidade: %.2f %%\n", sensors_data.humidity);
-
-        // if (display_page) {
         //     // Exibe os dados no display
-        //     sprintf(str_tmp, "%.1f ºC", sensors_data.temperature);
-        //     sprintf(str_alt, "%.0f m", sensors_data.altitude);
-        //     sprintf(str_umi, "%.1f %%", sensors_data.humidity);
-        //     sprintf(str_pres, "%.1f hPa", sensors_data.pressure);
+        //     sprintf(str_tmp, "%.1f ºC", sensors_data.temperature * 100.0f);
+        //     sprintf(str_alt, "%.0f m", sensors_data.altitude * 100.0f);
+        //     sprintf(str_umi, "%.1f %%", sensors_data.humidity * 100.0f);
+        //     sprintf(str_pres, "%.1f hPa", sensors_data.pressure * 100.0f);
 
         //     //  Atualiza o conteúdo do display com animações
         //     ssd1306_fill(&ssd, !color);
@@ -444,56 +431,9 @@ int main() {
         //     sprintf(str_pres, "%.1fhPa", sensors_data.pressure);
         //     ssd1306_draw_string(&ssd, str_pres, 54, 55);
         //     ssd1306_send_data(&ssd);
-        // } else {
-        //     ssd1306_fill(&ssd, !color);
-        //     ssd1306_rect(&ssd, 2, 2, 124, 62, true, false);
-        //     ssd1306_draw_string(&ssd, "ESTACAO", 4, 6);
-        //     ssd1306_draw_string(&ssd, "LORA", 4, 14);
-        //     // ssd1306_line(&ssd, 3, 23, 123, 23, true); // linha horizontal - primeira
-        //     // ssd1306_draw_string(&ssd, "IP", 4, 25);
-        //     // ssd1306_draw_string(&ssd, ip_str, 4, 33);
-        //     // ssd1306_send_data(&ssd);
-        // }
 
         // sx1276_transmit(tx_buffer, sizeof(tx_buffer));
-
-        ///// ------------ RECEPTOR DOS SENSORES ------------------
-        // sensors_packet_t pkt;
-        // uint8_t rx_buffer[12];
-
-        // uint8_t received_len = sx1276_receive(rx_buffer, sizeof(rx_buffer));
-        // if (received_len == sizeof(rx_buffer)) {
-        //     sensors_data_t received_data = decode_sensor_data(rx_buffer);
-        //     printf("Recebido:\n");
-        //     printf("Pressao: %.2f hPa\n", received_data.pressure);
-        //     printf("Temperatura: %.2f °C\n", received_data.temperature);
-        //     printf("Umidade: %.2f %%\n", received_data.humidity);
-        //     printf("Altitude: %.2f m\n", received_data.altitude);
-        // } else {
-        //     printf("Erro\n");
         // }
-
-        ////// --------------- EXEMPLO ----------------------------
-        // Transmissor
-        // uint8_t msg[] = "Hello, World!";
-
-        // sx1276_transmit(msg, sizeof(msg) - 1);
-
-        // sleep_ms(3000);
-
-         // Receptor
-        // Mensagens recebidas
-        // uint8_t buffer[64];
-        // uint8_t received = sx1276_receive(&buffer, sizeof(buffer));
-
-        // if (received > 0) {
-        //     printf("Mensagem recebida: ");
-        //     for (uint8_t i = 0; i < received; i++) {
-        //         putchar(buffer[i]);
-        //     }
-        //     printf("\n");
-        // }
-    // }
 
     return 0;
 }
