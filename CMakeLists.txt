@@ -43,9 +43,6 @@ include_directories(
 
 add_executable(lora_project
     main.c
-    inc/button/button.c
-    inc/buzzer/buzzer.c
-    inc/led_rgb/led.c
     inc/i2c_protocol/i2c_protocol.c
     inc/display/ssd1306.c
     inc/sensors/aht20.c
@@ -63,7 +60,6 @@ pico_enable_stdio_usb(lora_project 1)
 target_link_libraries(lora_project
     pico_stdlib
     hardware_i2c
-    hardware_pwm
     hardware_adc
     hardware_spi
     FreeRTOS-Kernel
